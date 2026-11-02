@@ -1,0 +1,34 @@
+#pragma code_page(65001)
+
+1 ICON "vn_lunar.ico"
+1 24 "app.manifest"
+
+1 VERSIONINFO
+ FILEVERSION 1,0,0,0
+ PRODUCTVERSION 1,0,0,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS 0x40004L
+ FILETYPE 0x1L
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "042A04B0"
+        BEGIN
+            VALUE "CompanyName", "bbkim"
+            VALUE "FileDescription", "VN Lunar Calendar - Lịch âm Việt Nam cho đồng hồ taskbar"
+            VALUE "FileVersion", "1.0.0.0"
+            VALUE "InternalName", "VN_LunarCalendar"
+            VALUE "LegalCopyright", "© 2026 bbkim. All rights reserved."
+            VALUE "OriginalFilename", "VN_LunarCalendar.exe"
+            VALUE "ProductName", "VN Lunar Calendar"
+            VALUE "ProductVersion", "1.0.0.0"
+            VALUE "Comments", "Tác giả: bbkim. Lịch âm Việt Nam thay cho khay lịch của Windows 10/11."
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x042A, 0x04B0
+    END
+END
