@@ -1004,7 +1004,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     g_taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
     UpdateTrayIcon(true);
     ArmMidnightTimer();
-    RegisterHotKey(g_hwnd, 1, MOD_CONTROL | MOD_ALT, 'L');   // Ctrl+Alt+L (silently ignored if already taken)
+    RegisterHotKey(g_hwnd, 1, MOD_WIN, 'N');
     g_eventHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr, ForegroundProc, 0, 0,
                                   WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
     TrimMemory();
