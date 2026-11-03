@@ -1,4 +1,4 @@
-﻿VN_LunarCalendar - Lịch âm Việt Nam cho đồng hồ taskbar (Windows 10 và Windows 11)
+﻿﻿VN_LunarCalendar - Lịch âm Việt Nam cho đồng hồ taskbar (Windows 10 và Windows 11)
 ===============================================================================
 
 LÀ GÌ
