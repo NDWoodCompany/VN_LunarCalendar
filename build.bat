@@ -28,7 +28,7 @@ if errorlevel 1 (
 "%G%" -std=c++17 -Os -s -fno-exceptions -fno-rtti -fno-asynchronous-unwind-tables -fno-unwind-tables ^
   -ffunction-sections -fdata-sections -Wl,--gc-sections -mwindows -municode ^
   -static-libgcc -static-libstdc++ -finput-charset=UTF-8 ^
-  -o VN_LunarCalendar.exe src\main.cpp build\resource.o -luser32 -lgdi32 -lshell32 -ladvapi32 > build_error.log 2>&1
+  -o VN_LunarCalendar.exe src\main.cpp build\resource.o -luser32 -lgdi32 -lshell32 -ladvapi32 -lole32 -loleaut32 -luiautomationcore > build_error.log 2>&1
 if errorlevel 1 (
   echo BUILD FAILED. See build_error.log:
   type build_error.log

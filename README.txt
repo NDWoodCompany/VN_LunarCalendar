@@ -41,3 +41,9 @@ XUNG ĐỘT VÀ GIỚI HẠN
   - Không xung đột với Windhawk hay các mod khác vì không chèn gì vào tiến trình khác.
   - Âm lịch tính theo múi giờ UTC+7 (UTC+8 cho năm trước 1968), đã kiểm tra các ngày Tết 1968-2028, tháng nhuận
     và tính nhất quán 1950-2150.
+
+FIX 2026-11-03: Clock detection no longer uses a fixed 96/130 DIP taskbar region on Windows 11.
+The program first uses Windows UI Automation to identify the actual SystemTrayIcon clock element
+(AutomationId=SystemTrayIcon + SystemTray.IconView + current clock/date text), then falls back to
+real Win32 clock child windows for Windows 10. Network, Volume, Battery and Quick Settings are not
+classified as the clock just because they are near the right edge of the taskbar.

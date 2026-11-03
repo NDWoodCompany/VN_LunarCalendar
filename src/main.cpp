@@ -16,6 +16,7 @@
 #endif
 #include <windows.h>
 #include <shellapi.h>
+#include <uiautomation.h>
 #include <cwchar>
 #include "vn_lunar.h"
 
@@ -183,6 +184,68 @@ UINT DpiOfWindow(HWND hwnd) {
 }
 
 typedef HRESULT(WINAPI* PfnMonitorDpi)(HMONITOR, int, UINT*, UINT*);
+
+bool UiaStringEquals(BSTR s, const wchar_t* v) { return s && v && wcscmp(s, v) == 0; }
+bool UiaStringStarts(BSTR s, const wchar_t* v) {
+    if (!s || !v) return false;
+    size_t n = wcslen(v);
+    return wcsncmp(s, v, n) == 0;
+}
+bool UiaStringContains(BSTR s, const wchar_t* v) { return s && v && wcsstr(s, v) != nullptr; }
+
+bool IsClockUiaElement(IUIAutomationElement* e, RECT* out) {
+    if (!e) return false;
+    BSTR cls = nullptr, aid = nullptr, name = nullptr;
+    e->get_CurrentClassName(&cls);
+    e->get_CurrentAutomationId(&aid);
+    e->get_CurrentName(&name);
+    bool trayIcon = UiaStringEquals(aid, L"SystemTrayIcon") &&
+                    (UiaStringEquals(cls, L"SystemTray.IconView") || UiaStringContains(cls, L"SystemTray.IconView"));
+    bool namedClock = UiaStringStarts(name, L"Clock ");
+    if (!namedClock && trayIcon) {
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        wchar_t timeBuf[80]{}, dateBuf[80]{};
+        GetTimeFormatEx(LOCALE_NAME_USER_DEFAULT, TIME_NOSECONDS, &st, nullptr, timeBuf, 80);
+        GetDateFormatEx(LOCALE_NAME_USER_DEFAULT, DATE_SHORTDATE, &st, nullptr, dateBuf, 80, nullptr);
+        namedClock = (timeBuf[0] && UiaStringContains(name, timeBuf)) || (dateBuf[0] && UiaStringContains(name, dateBuf));
+    }
+    bool ok = trayIcon && namedClock;
+    if (ok && out) e->get_CurrentBoundingRectangle(out);
+    if (cls) SysFreeString(cls);
+    if (aid) SysFreeString(aid);
+    if (name) SysFreeString(name);
+    return ok;
+}
+
+bool ClockAreaViaUIA(POINT pt, RECT* out) {
+    IUIAutomation* ui = nullptr;
+    IUIAutomationElement* hit = nullptr;
+    IUIAutomationTreeWalker* walker = nullptr;
+    bool found = false;
+    CLSID clsidUIAutomation{};
+    if (FAILED(CLSIDFromString(L"{FF48DBA4-60EF-4201-AA87-54103EEF594E}", &clsidUIAutomation))) return false;
+    if (FAILED(CoCreateInstance(clsidUIAutomation, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&ui))) || !ui) return false;
+    if (SUCCEEDED(ui->ElementFromPoint(pt, &hit)) && hit) {
+        if (SUCCEEDED(ui->get_RawViewWalker(&walker)) && walker) {
+            IUIAutomationElement* cur = hit;
+            hit = nullptr;
+            for (int i = 0; cur && i < 12; ++i) {
+                if (IsClockUiaElement(cur, out)) { found = true; cur->Release(); cur = nullptr; break; }
+                IUIAutomationElement* parent = nullptr;
+                if (FAILED(walker->GetParentElement(cur, &parent)) || !parent) { cur->Release(); cur = nullptr; break; }
+                cur->Release();
+                cur = parent;
+            }
+            if (cur) cur->Release();
+        }
+    }
+    if (hit) hit->Release();
+    if (walker) walker->Release();
+    if (ui) ui->Release();
+    return found;
+}
+
 UINT DpiOfRect(const RECT* r) {
     UINT dx = 96, dy = 96;
     HMONITOR mon = MonitorFromRect(r, MONITOR_DEFAULTTONEAREST);
@@ -690,21 +753,13 @@ bool ClockAreaInTaskbar(HWND tb, POINT pt, RECT* out) {
     RECT tr;
     if (!GetWindowRect(tb, &tr) || !PtInRect(&tr, pt)) return false;
     ClockSearch s{pt, {}, false};
-    EnumChildWindows(tb, EnumClockChild, reinterpret_cast<LPARAM>(&s));   // Windows 10
+    EnumChildWindows(tb, EnumClockChild, reinterpret_cast<LPARAM>(&s));
     if (s.found) { *out = s.rect; return true; }
-    int tw = tr.right - tr.left, th = tr.bottom - tr.top;
-    if (tw > th) {   // Windows 11 (clock is not a window): rightmost part of a horizontal taskbar
-        int span = static_cast<int>(130.0 * DpiOfWindow(tb) / 96.0);
-        if (pt.x >= tr.right - span) {
-            *out = tr;
-            out->left = tr.right - span;
-            return true;
-        }
-    }
     return false;
 }
 
 bool ClockAreaAt(POINT pt, RECT* out) {
+    if (ClockAreaViaUIA(pt, out)) return true;
     HWND tb = nullptr;
     while ((tb = FindWindowExW(nullptr, tb, L"Shell_TrayWnd", nullptr)) != nullptr) {
         if (ClockAreaInTaskbar(tb, pt, out)) return true;
@@ -925,6 +980,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     if (!mutex || GetLastError() == ERROR_ALREADY_EXISTS) return 0;
 
     g_inst = inst;
+    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     EnableDpiAwareness();
     g_replaceFlyout = ReadDword(L"ReplaceFlyout", 1);
     LoadSystemTheme();
@@ -959,5 +1015,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
         DispatchMessageW(&msg);
     }
     UnregisterHotKey(g_hwnd, 1);
+    CoUninitialize();
+    CloseHandle(mutex);
     return 0;
 }
