@@ -1,6 +1,6 @@
 // VN_LunarCalendar - Vietnamese lunar calendar popup for the Windows taskbar clock (Win 10 / Win 11).
 // One small exe: pure Win32 + GDI, no DLL injection, no mouse hook, no third-party code, no C++ runtime library.
-// Idle cost: a hidden window + a WinEvent hook that only fires when the foreground window changes.
+// Idle cost: a hidden window + a foreground event hook used only to replace the Windows clock flyout.
 // It reads only system settings: date/time format, first day of week, light/dark theme, accent colour.
 #ifndef UNICODE
 #define UNICODE
@@ -16,7 +16,6 @@
 #endif
 #include <windows.h>
 #include <shellapi.h>
-#include <uiautomation.h>
 #include <cwchar>
 #include "vn_lunar.h"
 
@@ -38,6 +37,7 @@ const wchar_t* kRunKeyName = L"VN_LunarCalendar";
 const wchar_t* kSettingsKey = L"Software\\VN_LunarCalendar";
 
 constexpr UINT WM_APP_TRAY = WM_APP + 1;
+constexpr UINT WM_APP_CLOCK_CLICK = WM_APP + 2;
 constexpr UINT_PTR TIMER_CLOCK = 1;
 constexpr UINT_PTR TIMER_MIDNIGHT = 2;
 constexpr int ID_MENU_OPEN = 1001;
@@ -47,8 +47,8 @@ constexpr int ID_MENU_ABOUT = 1005;
 constexpr int ID_MENU_EXIT = 1004;
 constexpr int ID_ICON = 1;   // resource.rc
 
-// ---- layout in DIP (96 dpi) ----
-constexpr double W = 344, MARGIN = 14;
+// ---- layout in DIP (96 dpi); fixed comfortable width ----
+constexpr double BASE_W = 356, MARGIN = 14;
 constexpr double TIME_Y = 8, TIME_H = 58;
 constexpr double DATE_Y = 68, LINE_H = 18, CANCHI_Y = 87;
 constexpr double DIV_Y = 114;
@@ -67,10 +67,13 @@ NOTIFYICONDATAW g_nid{};
 UINT g_taskbarCreated = 0;
 HICON g_trayIcon = nullptr;
 bool g_replaceFlyout = true;
-DWORD g_focusLossTick = 0;
+bool g_replacingFlyout = false;
 DWORD g_shownTick = 0;
+DWORD g_focusLossTick = 0;
+RECT g_pendingClock{};
 
 double g_scale = 1.0;
+double g_calendarW = BASE_W;
 int g_viewYear = 2000, g_viewMonth = 1;
 int g_todayJdn = 0;
 int g_hover = -1;       // 0..41 cell, 100 prev, 101 next, 102 footer
@@ -185,66 +188,6 @@ UINT DpiOfWindow(HWND hwnd) {
 
 typedef HRESULT(WINAPI* PfnMonitorDpi)(HMONITOR, int, UINT*, UINT*);
 
-bool UiaStringEquals(BSTR s, const wchar_t* v) { return s && v && wcscmp(s, v) == 0; }
-bool UiaStringStarts(BSTR s, const wchar_t* v) {
-    if (!s || !v) return false;
-    size_t n = wcslen(v);
-    return wcsncmp(s, v, n) == 0;
-}
-bool UiaStringContains(BSTR s, const wchar_t* v) { return s && v && wcsstr(s, v) != nullptr; }
-
-bool IsClockUiaElement(IUIAutomationElement* e, RECT* out) {
-    if (!e) return false;
-    BSTR cls = nullptr, aid = nullptr, name = nullptr;
-    e->get_CurrentClassName(&cls);
-    e->get_CurrentAutomationId(&aid);
-    e->get_CurrentName(&name);
-    bool trayIcon = UiaStringEquals(aid, L"SystemTrayIcon") &&
-                    (UiaStringEquals(cls, L"SystemTray.IconView") || UiaStringContains(cls, L"SystemTray.IconView"));
-    bool namedClock = UiaStringStarts(name, L"Clock ");
-    if (!namedClock && trayIcon) {
-        SYSTEMTIME st;
-        GetLocalTime(&st);
-        wchar_t timeBuf[80]{}, dateBuf[80]{};
-        GetTimeFormatEx(LOCALE_NAME_USER_DEFAULT, TIME_NOSECONDS, &st, nullptr, timeBuf, 80);
-        GetDateFormatEx(LOCALE_NAME_USER_DEFAULT, DATE_SHORTDATE, &st, nullptr, dateBuf, 80, nullptr);
-        namedClock = (timeBuf[0] && UiaStringContains(name, timeBuf)) || (dateBuf[0] && UiaStringContains(name, dateBuf));
-    }
-    bool ok = trayIcon && namedClock;
-    if (ok && out) e->get_CurrentBoundingRectangle(out);
-    if (cls) SysFreeString(cls);
-    if (aid) SysFreeString(aid);
-    if (name) SysFreeString(name);
-    return ok;
-}
-
-bool ClockAreaViaUIA(POINT pt, RECT* out) {
-    IUIAutomation* ui = nullptr;
-    IUIAutomationElement* hit = nullptr;
-    IUIAutomationTreeWalker* walker = nullptr;
-    bool found = false;
-    CLSID clsidUIAutomation{};
-    if (FAILED(CLSIDFromString(L"{FF48DBA4-60EF-4201-AA87-54103EEF594E}", &clsidUIAutomation))) return false;
-    if (FAILED(CoCreateInstance(clsidUIAutomation, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&ui))) || !ui) return false;
-    if (SUCCEEDED(ui->ElementFromPoint(pt, &hit)) && hit) {
-        if (SUCCEEDED(ui->get_RawViewWalker(&walker)) && walker) {
-            IUIAutomationElement* cur = hit;
-            hit = nullptr;
-            for (int i = 0; cur && i < 12; ++i) {
-                if (IsClockUiaElement(cur, out)) { found = true; cur->Release(); cur = nullptr; break; }
-                IUIAutomationElement* parent = nullptr;
-                if (FAILED(walker->GetParentElement(cur, &parent)) || !parent) { cur->Release(); cur = nullptr; break; }
-                cur->Release();
-                cur = parent;
-            }
-            if (cur) cur->Release();
-        }
-    }
-    if (hit) hit->Release();
-    if (walker) walker->Release();
-    if (ui) ui->Release();
-    return found;
-}
 
 UINT DpiOfRect(const RECT* r) {
     UINT dx = 96, dy = 96;
@@ -326,7 +269,7 @@ RECT RectDip(double x, double y, double w, double h) {
 
 RECT CellRect(int idx) {
     int row = idx / 7, col = idx % 7;
-    double cw = (W - 2 * MARGIN) / 7.0;
+    double cw = (g_calendarW - 2 * MARGIN) / 7.0;
     RECT r;
     r.left = S(MARGIN + col * cw);
     r.right = S(MARGIN + (col + 1) * cw);
@@ -335,9 +278,9 @@ RECT CellRect(int idx) {
     return r;
 }
 
-RECT PrevRect() { return RectDip(W - MARGIN - 72, MONTH_Y, 36, MONTH_H); }
-RECT NextRect() { return RectDip(W - MARGIN - 36, MONTH_Y, 36, MONTH_H); }
-RECT FootRect() { return RectDip(0, FOOT_Y, W, FOOT_H); }
+RECT PrevRect() { return RectDip(g_calendarW - MARGIN - 72, MONTH_Y, 36, MONTH_H); }
+RECT NextRect() { return RectDip(g_calendarW - MARGIN - 36, MONTH_Y, 36, MONTH_H); }
+RECT FootRect() { return RectDip(0, FOOT_Y, g_calendarW, FOOT_H); }
 
 int HitTest(int x, int y) {
     POINT p{x, y};
@@ -448,6 +391,8 @@ void ReleaseResources() {
         DeleteObject(g_memBmp);
         g_memBmp = nullptr;
     }
+    g_memOld = nullptr;
+    g_bufW = g_bufH = 0;
 }
 
 void Render() {
@@ -464,18 +409,18 @@ void Render() {
 
     buf[0] = 0;
     GetTimeFormatEx(LOCALE_NAME_USER_DEFAULT, 0, &now, nullptr, buf, 128);
-    DrawStr(dc, g_fTime, t.text, buf, RectDip(MARGIN + 2, TIME_Y, W - 2 * MARGIN, TIME_H), DT_LEFT | DT_VCENTER);
+    DrawStr(dc, g_fTime, t.text, buf, RectDip(MARGIN + 2, TIME_Y, g_calendarW - 2 * MARGIN, TIME_H), DT_LEFT | DT_VCENTER);
     FormatDate(now, DATE_LONGDATE, nullptr, buf, 128);
-    DrawStr(dc, g_fDate, t.link, buf, RectDip(MARGIN + 2, DATE_Y, W - 2 * MARGIN, LINE_H), DT_LEFT | DT_VCENTER);
+    DrawStr(dc, g_fDate, t.link, buf, RectDip(MARGIN + 2, DATE_Y, g_calendarW - 2 * MARGIN, LINE_H), DT_LEFT | DT_VCENTER);
     Str canChi;
     CanChiLine(g_todayJdn, vnl::ToLunar(now.wYear, now.wMonth, now.wDay), canChi);
-    DrawStr(dc, g_fDate, t.link, canChi.s, RectDip(MARGIN + 2, CANCHI_Y, W - 2 * MARGIN, LINE_H),
+    DrawStr(dc, g_fDate, t.link, canChi.s, RectDip(MARGIN + 2, CANCHI_Y, g_calendarW - 2 * MARGIN, LINE_H),
             DT_LEFT | DT_VCENTER);
-    FillRectColor(dc, RectDip(0, DIV_Y, W, 1), t.divider);
+    FillRectColor(dc, RectDip(0, DIV_Y, g_calendarW, 1), t.divider);
 
     SYSTEMTIME first = MakeDate(g_viewYear, g_viewMonth, 1);
     FormatDate(first, 0, L"MMMM yyyy", buf, 128);
-    DrawStr(dc, g_fMonth, t.text, buf, RectDip(MARGIN + 2, MONTH_Y, W - 2 * MARGIN - 80, MONTH_H),
+    DrawStr(dc, g_fMonth, t.text, buf, RectDip(MARGIN + 2, MONTH_Y, g_calendarW - 2 * MARGIN - 80, MONTH_H),
             DT_LEFT | DT_VCENTER);
     RECT pr = PrevRect(), nr = NextRect();
     if (g_hover == 100) FillRectColor(dc, pr, t.hover);
@@ -483,7 +428,7 @@ void Render() {
     DrawChevron(dc, pr, true, t.text);
     DrawChevron(dc, nr, false, t.text);
 
-    double cw = (W - 2 * MARGIN) / 7.0;
+    double cw = (g_calendarW - 2 * MARGIN) / 7.0;
     for (int c = 0; c < 7; c++) {
         WeekdayLetter(c, buf, 16);
         DrawStr(dc, g_fSmall, t.text, buf, RectDip(MARGIN + c * cw, WD_Y, cw, WD_H), DT_CENTER | DT_VCENTER);
@@ -540,11 +485,11 @@ void Render() {
         else if (c.lunar.day == 1) { l3 = L"Mùng Một (Sóc)"; l3Color = t.lunar; }
         else if (c.lunar.day == 15) { l3 = L"Ngày Rằm (Vọng)"; l3Color = t.lunar; }
         double lh = INFO_H / 3.0;
-        FillRectColor(dc, RectDip(MARGIN, INFO_Y - 2, W - 2 * MARGIN, 1), t.divider);
+        FillRectColor(dc, RectDip(MARGIN, INFO_Y - 2, g_calendarW - 2 * MARGIN, 1), t.divider);
         UINT f = DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS;
-        DrawStr(dc, g_fSmall, t.text, l1.s, RectDip(MARGIN + 2, INFO_Y, W - 2 * MARGIN, lh), f);
-        DrawStr(dc, g_fSmall, t.lunar, l2.s, RectDip(MARGIN + 2, INFO_Y + lh, W - 2 * MARGIN, lh), f);
-        DrawStr(dc, g_fSmall, l3Color, l3, RectDip(MARGIN + 2, INFO_Y + 2 * lh, W - 2 * MARGIN, lh), f);
+        DrawStr(dc, g_fSmall, t.text, l1.s, RectDip(MARGIN + 2, INFO_Y, g_calendarW - 2 * MARGIN, lh), f);
+        DrawStr(dc, g_fSmall, t.lunar, l2.s, RectDip(MARGIN + 2, INFO_Y + lh, g_calendarW - 2 * MARGIN, lh), f);
+        DrawStr(dc, g_fSmall, l3Color, l3, RectDip(MARGIN + 2, INFO_Y + 2 * lh, g_calendarW - 2 * MARGIN, lh), f);
     }
 
     RECT foot = FootRect();
@@ -596,7 +541,15 @@ void ArmMidnightTimer() {
 }
 
 void TrimMemory() {
-    SetProcessWorkingSetSize(GetCurrentProcess(), static_cast<SIZE_T>(-1), static_cast<SIZE_T>(-1));
+    HANDLE p = GetCurrentProcess();
+    SetProcessWorkingSetSize(p, static_cast<SIZE_T>(-1), static_cast<SIZE_T>(-1));
+    HMODULE psapi = LoadLibraryW(L"psapi.dll");
+    if (psapi) {
+        using PfnEmptyWorkingSet = BOOL(WINAPI*)(HANDLE);
+        auto fn = reinterpret_cast<PfnEmptyWorkingSet>(GetProcAddress(psapi, "EmptyWorkingSet"));
+        if (fn) fn(p);
+        FreeLibrary(psapi);
+    }
 }
 
 // ---------------------------------------------------------------- settings in the registry
@@ -677,7 +630,9 @@ void HideCalendar(bool byFocusLoss) {
     ShowWindow(g_hwnd, SW_HIDE);
     ReleaseResources();
     g_hover = -1;
+    g_tracking = false;
     if (byFocusLoss) g_focusLossTick = GetTickCount();
+    RedrawWindow(g_hwnd, nullptr, nullptr, RDW_ERASE | RDW_INVALIDATE | RDW_UPDATENOW);
     TrimMemory();
 }
 
@@ -686,28 +641,27 @@ void SendEscape() {
     keybd_event(VK_ESCAPE, 0, KEYEVENTF_KEYUP, 0);
 }
 
-void ShowCalendar(const RECT* anchor, bool fromFlyout = false) {
+void ShowCalendar(const RECT* anchor, bool fromFlyout = false, const RECT* nativeRect = nullptr) {
     if (IsWindowVisible(g_hwnd)) return;
-    LoadSystemTheme();
-    LoadLocaleInfo();
+    (void)fromFlyout;
+    (void)nativeRect;
     GoToToday();
     g_hover = -1;
-
     RECT probe;
-    if (anchor) probe = *anchor;
+    if (nativeRect) probe = *nativeRect;
+    else if (anchor) probe = *anchor;
     else {
         HWND tray = FindWindowW(L"Shell_TrayWnd", nullptr);
         if (!tray || !GetWindowRect(tray, &probe)) { POINT pt; GetCursorPos(&pt); probe = {pt.x, pt.y, pt.x, pt.y}; }
     }
     g_scale = DpiOfRect(&probe) / 96.0;
-    int w = S(W), h = S(H), x = 0, y = 0;
+    g_calendarW = BASE_W;
+    int w = S(g_calendarW), h = S(H), x = 0, y = 0;
     HMONITOR mon = nullptr;
     PlaceWindow(anchor, w, h, x, y, mon);
-
     AcquireResources(w, h);
-    Render();   // fully painted before the window becomes visible: no blank flash
+    Render();
     SetWindowPos(g_hwnd, HWND_TOPMOST, x, y, w, h, SWP_SHOWWINDOW);
-
     HWND fg = GetForegroundWindow();
     DWORD fgThread = fg ? GetWindowThreadProcessId(fg, nullptr) : 0;
     DWORD me = GetCurrentThreadId();
@@ -716,7 +670,6 @@ void ShowCalendar(const RECT* anchor, bool fromFlyout = false) {
     SetForegroundWindow(g_hwnd);
     SetFocus(g_hwnd);
     if (attached) AttachThreadInput(me, fgThread, FALSE);
-    if (fromFlyout && GetForegroundWindow() != g_hwnd) SendEscape();   // could not take focus: close the Windows flyout underneath
     g_shownTick = GetTickCount();
     SetTimer(g_hwnd, TIMER_CLOCK, 1000, nullptr);
 }
@@ -726,7 +679,7 @@ void ToggleCalendar(const RECT* anchor) {
     else ShowCalendar(anchor);
 }
 
-// ---------------------------------------------------------------- detect the Windows clock flyout
+// ---------------------------------------------------------------- detect the real Windows taskbar clock
 
 struct ClockSearch {
     POINT pt;
@@ -759,7 +712,6 @@ bool ClockAreaInTaskbar(HWND tb, POINT pt, RECT* out) {
 }
 
 bool ClockAreaAt(POINT pt, RECT* out) {
-    if (ClockAreaViaUIA(pt, out)) return true;
     HWND tb = nullptr;
     while ((tb = FindWindowExW(nullptr, tb, L"Shell_TrayWnd", nullptr)) != nullptr) {
         if (ClockAreaInTaskbar(tb, pt, out)) return true;
@@ -770,6 +722,7 @@ bool ClockAreaAt(POINT pt, RECT* out) {
     }
     return false;
 }
+
 
 bool IsShellFlyoutProcess(HWND hwnd) {
     DWORD pid = 0;
@@ -790,27 +743,24 @@ bool IsShellFlyoutProcess(HWND hwnd) {
 
 void CALLBACK ForegroundProc(HWINEVENTHOOK, DWORD, HWND hwnd, LONG idObject, LONG, DWORD, DWORD) {
     if (idObject != OBJID_WINDOW || !hwnd || hwnd == g_hwnd) return;
-
-    // any other window taking the foreground closes our popup
-    // (ignore the short burst of foreground changes while the Windows flyout is closing right after we opened)
-    if (IsWindowVisible(g_hwnd) && GetTickCount() - g_shownTick > 300) HideCalendar(true);
+    if (IsWindowVisible(g_hwnd) && GetTickCount() - g_shownTick > 300) {
+        HideCalendar(true);
+        return;
+    }
     if (!g_replaceFlyout) return;
-
     wchar_t cls[40]{};
     GetClassNameW(hwnd, cls, 40);
     if (wcscmp(cls, L"Windows.UI.Core.CoreWindow") != 0 && wcscmp(cls, L"ControlCenterWindow") != 0) return;
-
     POINT pt;
     GetCursorPos(&pt);
-    RECT clock;
-    if (!ClockAreaAt(pt, &clock)) return;   // opened by keyboard / other flyout: leave it alone
+    RECT clock{};
+    if (!ClockAreaAt(pt, &clock)) return;
     if (!IsShellFlyoutProcess(hwnd)) return;
 
-    if (GetTickCount() - g_focusLossTick < 500) {
-        SendEscape();   // second click on the clock while our popup was open = close both
-        return;
-    }
-    ShowCalendar(&clock, true);
+    // Hide Windows calendar first. Our calendar is rendered only after the native flyout is gone.
+    ShowWindow(hwnd, SW_HIDE);
+    g_pendingClock = clock;
+    PostMessageW(g_hwnd, WM_APP_CLOCK_CLICK, 0, 0);
 }
 
 // ---------------------------------------------------------------- window procedure
@@ -846,6 +796,11 @@ void ShowTrayMenu() {
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
+        case WM_APP_CLOCK_CLICK: {
+            if (IsWindowVisible(g_hwnd)) HideCalendar(false);
+            else ShowCalendar(&g_pendingClock);
+            return 0;
+        }
         case WM_ERASEBKGND:
             return 1;
         case WM_PAINT: {
@@ -936,7 +891,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             else if (LOWORD(lp) == WM_RBUTTONUP || LOWORD(lp) == WM_CONTEXTMENU) ShowTrayMenu();
             return 0;
         case WM_DESTROY:
-            if (g_eventHook) UnhookWinEvent(g_eventHook);
             Shell_NotifyIconW(NIM_DELETE, &g_nid);
             if (g_trayIcon) DestroyIcon(g_trayIcon);
             ReleaseResources();
@@ -980,7 +934,6 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     if (!mutex || GetLastError() == ERROR_ALREADY_EXISTS) return 0;
 
     g_inst = inst;
-    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     EnableDpiAwareness();
     g_replaceFlyout = ReadDword(L"ReplaceFlyout", 1);
     LoadSystemTheme();
@@ -1005,8 +958,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     UpdateTrayIcon(true);
     ArmMidnightTimer();
     RegisterHotKey(g_hwnd, 1, MOD_WIN, 'N');
-    g_eventHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr, ForegroundProc, 0, 0,
-                                  WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+    g_eventHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr, ForegroundProc, 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
     TrimMemory();
 
     MSG msg;
@@ -1015,7 +967,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
         DispatchMessageW(&msg);
     }
     UnregisterHotKey(g_hwnd, 1);
-    CoUninitialize();
+    if (g_eventHook) { UnhookWinEvent(g_eventHook); g_eventHook = nullptr; }
     CloseHandle(mutex);
     return 0;
 }
