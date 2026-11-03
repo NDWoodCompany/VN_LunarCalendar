@@ -10,8 +10,8 @@ LÀ GÌ
 CÁCH DÙNG
   - Bấm đồng hồ taskbar: mở lịch. Bấm lại (hoặc bấm ra ngoài, Esc): đóng.
   - Muốn dùng lịch gốc của Windows: bỏ tick "Thay lịch Windows khi bấm đồng hồ" trong menu chuột phải của icon khay.
-    Lịch gốc cũng vẫn mở bình thường khi bạn gọi bằng phím tắt (Win+Alt+D, Win+N) vì lúc đó con trỏ không nằm trên đồng hồ.
-  - Ctrl+Alt+L hoặc click icon khay (rê chuột vào icon để xem ngày âm hôm nay): mở lịch.
+    Lịch gốc cũng vẫn mở bình thường khi bạn gọi bằng phím tắt (Win+Alt+D) vì lúc đó con trỏ không nằm trên đồng hồ.
+  - Win+N hoặc click icon khay (rê chuột vào icon để xem ngày âm hôm nay): mở lịch.
   - Lăn chuột / mũi tên / PageUp / PageDown: đổi tháng. Home: về hôm nay.
   - Rê chuột vào một ngày: dòng thông tin phía dưới hiện ngày âm, Can Chi ngày/tháng/năm và tên ngày lễ.
   - Màu đỏ = ngày lễ âm lịch bạn chọn (Tết mùng 1-4 và Giỗ Tổ đỏ cả số dương; các ngày khác chỉ nhãn âm).
