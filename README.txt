@@ -1,9 +1,8 @@
-﻿﻿VN_LunarCalendar - Lịch âm Việt Nam cho đồng hồ taskbar (Windows 10 và Windows 11)
+﻿VN_LunarCalendar - Lịch âm Việt Nam cho đồng hồ taskbar (Windows 10 và Windows 11)
 ===============================================================================
 
 LÀ GÌ
-  Một file exe duy nhất (C++ thuần, Win32 + GDI). Khi bạn bấm vào đồng hồ ở taskbar, lịch này hiện ra
-  thay cho khay lịch của Windows: mỗi ô có số dương lịch và ngày âm lịch nhỏ bên dưới (10/9, 1/6n = tháng nhuận).
+  Một file exe duy nhất (C++ thuần, Win32 + GDI). Khi bạn bấm vào đồng hồ ở taskbar, lịch này hiện ra thay cho khay lịch của Windows: mỗi ô có số dương lịch và ngày âm lịch nhỏ bên dưới (10/9, 1/6n = tháng nhuận).
   Không nhúng DLL, không hook chuột, không Windhawk/WinRT/MinHook, không thư viện C++ nào.
   Chỉ dùng thiết lập hệ thống: định dạng ngày giờ, tên tháng/thứ, ngày đầu tuần, giao diện sáng/tối, màu accent.
 
@@ -31,19 +30,5 @@ TÀI NGUYÊN
   - 1 timer duy nhất, kêu 1 lần mỗi nửa đêm. Timer 1 giây chỉ chạy khi lịch đang mở.
   - Font và bộ đệm vẽ chỉ được tạo khi lịch mở, giải phóng khi đóng; RAM được thu gọn (working set) mỗi lần đóng.
 
-XUNG ĐỘT VÀ GIỚI HẠN
-  - Phát hiện lịch Windows: khi cửa sổ foreground đổi sang flyout của ShellExperienceHost/ShellHost VÀ con trỏ
-    đang nằm trên đồng hồ. Vì vậy lịch gốc có thể nháy một thoáng (vài chục ms) trước khi lịch này hiện.
-  - Windows 11: bấm đồng hồ cũng mở Trung tâm thông báo. Khi bật "Thay lịch Windows", lịch này thay luôn nó
-    (thông báo vẫn mở được bằng Win+N hoặc tắt tùy chọn). Vùng đồng hồ được ước lượng là ~130 DIP bên phải taskbar.
-  - Ctrl+Alt+L có thể trùng phím tắt của phần mềm khác (card đồ họa, bộ gõ...): nếu bị trùng thì phím này không hoạt
-    động, các cách mở khác vẫn dùng được.
-  - Không xung đột với Windhawk hay các mod khác vì không chèn gì vào tiến trình khác.
-  - Âm lịch tính theo múi giờ UTC+7 (UTC+8 cho năm trước 1968), đã kiểm tra các ngày Tết 1968-2028, tháng nhuận
-    và tính nhất quán 1950-2150.
-
-FIX 2026-11-03: Clock detection no longer uses a fixed 96/130 DIP taskbar region on Windows 11.
-The program first uses Windows UI Automation to identify the actual SystemTrayIcon clock element
-(AutomationId=SystemTrayIcon + SystemTray.IconView + current clock/date text), then falls back to
-real Win32 clock child windows for Windows 10. Network, Volume, Battery and Quick Settings are not
-classified as the clock just because they are near the right edge of the taskbar.
+GIỚI HẠN
+  - Âm lịch tính theo múi giờ UTC+7 (UTC+8 cho năm trước 1968), đã kiểm tra các ngày Tết 1968-2028, tháng nhuận và tính nhất quán 1950-2150.
