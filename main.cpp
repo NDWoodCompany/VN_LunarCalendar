@@ -15,8 +15,11 @@
 #define _WIN32_WINNT 0x0A00
 #endif
 #include <windows.h>
+#include <windowsx.h>
 #include <shellapi.h>
+#include <commctrl.h>
 #include <cwchar>
+#include <strsafe.h>
 #include "vn_lunar.h"
 
 #ifndef LOCALE_RETURN_NUMBER
@@ -38,6 +41,9 @@ const wchar_t* kSettingsKey = L"Software\\VN_LunarCalendar";
 
 constexpr UINT WM_APP_TRAY = WM_APP + 1;
 constexpr UINT WM_APP_CLOCK_CLICK = WM_APP + 2;
+constexpr UINT WM_APP_SHOW_SETTINGS = WM_APP + 3;
+constexpr int ID_MENU_SETTINGS = 1006;
+constexpr int ID_CFG_AUTORUN = 2001, ID_CFG_REPLACE = 2002, ID_CFG_TRAY = 2003, ID_CFG_SAVE = 2004, ID_CFG_STATUS = 2005;
 constexpr UINT_PTR TIMER_CLOCK = 1;
 constexpr UINT_PTR TIMER_MIDNIGHT = 2;
 constexpr int ID_MENU_OPEN = 1001;
@@ -62,6 +68,11 @@ constexpr double H = 552;
 // ---- state ----
 HINSTANCE g_inst = nullptr;
 HWND g_hwnd = nullptr;
+HWND g_settings = nullptr;
+HFONT g_cfgFont = nullptr;
+HFONT g_cfgTitleFont = nullptr;
+bool g_cfgAutorun = false, g_cfgReplace = false, g_cfgTray = false;
+bool g_trayEnabled = true;
 HWINEVENTHOOK g_eventHook = nullptr;
 NOTIFYICONDATAW g_nid{};
 UINT g_taskbarCreated = 0;
@@ -360,20 +371,32 @@ HFONT MakeFont(int heightDip, int weight, const wchar_t* face) {
                        CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, face);
 }
 
-void AcquireResources(int w, int h) {
+void ReleaseResources();
+
+bool AcquireResources(int w, int h) {
+    ReleaseResources();
     g_fTime = MakeFont(46, FW_LIGHT, L"Segoe UI Light");
     g_fDate = MakeFont(13, FW_NORMAL, L"Segoe UI");
     g_fMonth = MakeFont(15, FW_NORMAL, L"Segoe UI");
     g_fDay = MakeFont(16, FW_NORMAL, L"Segoe UI");
     g_fLunar = MakeFont(10, FW_NORMAL, L"Segoe UI");
     g_fSmall = MakeFont(12, FW_NORMAL, L"Segoe UI");
+    if (!g_fTime || !g_fDate || !g_fMonth || !g_fDay || !g_fLunar || !g_fSmall) {
+        ReleaseResources();
+        return false;
+    }
     HDC screen = GetDC(nullptr);
+    if (!screen) { ReleaseResources(); return false; }
     g_memDC = CreateCompatibleDC(screen);
-    g_memBmp = CreateCompatibleBitmap(screen, w, h);
+    if (g_memDC) g_memBmp = CreateCompatibleBitmap(screen, w, h);
     ReleaseDC(nullptr, screen);
-    g_memOld = static_cast<HBITMAP>(SelectObject(g_memDC, g_memBmp));
+    if (!g_memDC || !g_memBmp) { ReleaseResources(); return false; }
+    HGDIOBJ old = SelectObject(g_memDC, g_memBmp);
+    if (!old || old == HGDI_ERROR) { ReleaseResources(); return false; }
+    g_memOld = static_cast<HBITMAP>(old);
     g_bufW = w;
     g_bufH = h;
+    return true;
 }
 
 void ReleaseResources() {
@@ -383,7 +406,7 @@ void ReleaseResources() {
         *f = nullptr;
     }
     if (g_memDC) {
-        SelectObject(g_memDC, g_memOld);
+        if (g_memOld) SelectObject(g_memDC, g_memOld);
         DeleteDC(g_memDC);
         g_memDC = nullptr;
     }
@@ -508,6 +531,8 @@ void Redraw() {
 // ---------------------------------------------------------------- tray icon
 
 void UpdateTrayIcon(bool add) {
+    if (!g_trayEnabled) return;
+    if (!g_hwnd) return;
     SYSTEMTIME st;
     GetLocalTime(&st);
     vnl::Lunar l = vnl::ToLunar(st.wYear, st.wMonth, st.wDay);
@@ -541,15 +566,7 @@ void ArmMidnightTimer() {
 }
 
 void TrimMemory() {
-    HANDLE p = GetCurrentProcess();
-    SetProcessWorkingSetSize(p, static_cast<SIZE_T>(-1), static_cast<SIZE_T>(-1));
-    HMODULE psapi = LoadLibraryW(L"psapi.dll");
-    if (psapi) {
-        using PfnEmptyWorkingSet = BOOL(WINAPI*)(HANDLE);
-        auto fn = reinterpret_cast<PfnEmptyWorkingSet>(GetProcAddress(psapi, "EmptyWorkingSet"));
-        if (fn) fn(p);
-        FreeLibrary(psapi);
-    }
+    // Windows tự quản lý working set; tài nguyên GDI đã được giải phóng tại ReleaseResources().
 }
 
 // ---------------------------------------------------------------- settings in the registry
@@ -570,25 +587,33 @@ void WriteDword(const wchar_t* name, DWORD value) {
 }
 
 bool IsAutorun() {
-    return RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", kRunKeyName,
-                        RRF_RT_REG_SZ, nullptr, nullptr, nullptr) == ERROR_SUCCESS;
+    DWORD type = 0, bytes = 0;
+    LONG r = RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", kRunKeyName,
+                          RRF_RT_REG_SZ, &type, nullptr, &bytes);
+    return r == ERROR_SUCCESS && bytes > sizeof(wchar_t);
 }
 
-void SetAutorun(bool on) {
-    HKEY key;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_SET_VALUE,
-                      &key) != ERROR_SUCCESS) return;
+bool SetAutorun(bool on) {
+    HKEY key = nullptr;
+    LONG r = RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, nullptr, 0,
+                             KEY_QUERY_VALUE | KEY_SET_VALUE, nullptr, &key, nullptr);
+    if (r != ERROR_SUCCESS) return false;
     if (on) {
-        wchar_t path[MAX_PATH + 4]{};
-        path[0] = L'"';
-        GetModuleFileNameW(nullptr, path + 1, MAX_PATH);
-        wcscat(path, L"\"");
-        RegSetValueExW(key, kRunKeyName, 0, REG_SZ, reinterpret_cast<const BYTE*>(path),
-                       static_cast<DWORD>((wcslen(path) + 1) * sizeof(wchar_t)));
+        wchar_t exe[32768]{};
+        DWORD n = GetModuleFileNameW(nullptr, exe, static_cast<DWORD>(sizeof(exe) / sizeof(exe[0])));
+        if (!n || n >= sizeof(exe) / sizeof(exe[0])) { RegCloseKey(key); return false; }
+        wchar_t value[32780]{};
+        if (FAILED(StringCchPrintfW(value, sizeof(value) / sizeof(value[0]), L"\"%s\" --auto", exe))) {
+            RegCloseKey(key); return false;
+        }
+        r = RegSetValueExW(key, kRunKeyName, 0, REG_SZ, reinterpret_cast<const BYTE*>(value),
+                           static_cast<DWORD>((wcslen(value) + 1) * sizeof(wchar_t)));
     } else {
-        RegDeleteValueW(key, kRunKeyName);
+        r = RegDeleteValueW(key, kRunKeyName);
+        if (r == ERROR_FILE_NOT_FOUND) r = ERROR_SUCCESS;
     }
     RegCloseKey(key);
+    return r == ERROR_SUCCESS && (on ? IsAutorun() : !IsAutorun());
 }
 
 // ---------------------------------------------------------------- show / hide
@@ -659,7 +684,7 @@ void ShowCalendar(const RECT* anchor, bool fromFlyout = false, const RECT* nativ
     int w = S(g_calendarW), h = S(H), x = 0, y = 0;
     HMONITOR mon = nullptr;
     PlaceWindow(anchor, w, h, x, y, mon);
-    AcquireResources(w, h);
+    if (!AcquireResources(w, h)) return;
     Render();
     SetWindowPos(g_hwnd, HWND_TOPMOST, x, y, w, h, SWP_SHOWWINDOW);
     HWND fg = GetForegroundWindow();
@@ -768,6 +793,7 @@ void CALLBACK ForegroundProc(HWINEVENTHOOK, DWORD, HWND hwnd, LONG idObject, LON
 void ShowTrayMenu() {
     HMENU menu = CreatePopupMenu();
     AppendMenuW(menu, MF_STRING, ID_MENU_OPEN, L"Mở lịch");
+    AppendMenuW(menu, MF_STRING, ID_MENU_SETTINGS, L"Cấu hình...");
     AppendMenuW(menu, MF_STRING | (g_replaceFlyout ? MF_CHECKED : 0), ID_MENU_REPLACE,
                 L"Thay lịch Windows khi bấm đồng hồ");
     AppendMenuW(menu, MF_STRING | (IsAutorun() ? MF_CHECKED : 0), ID_MENU_AUTORUN, L"Chạy cùng Windows");
@@ -781,11 +807,32 @@ void ShowTrayMenu() {
     PostMessageW(g_hwnd, WM_NULL, 0, 0);
     DestroyMenu(menu);
     if (cmd == ID_MENU_OPEN) ShowCalendar(nullptr);
-    else if (cmd == ID_MENU_REPLACE) { g_replaceFlyout = !g_replaceFlyout; WriteDword(L"ReplaceFlyout", g_replaceFlyout); }
+    else if (cmd == ID_MENU_SETTINGS) PostMessageW(g_hwnd, WM_APP_SHOW_SETTINGS, 0, 0);
+    else if (cmd == ID_MENU_REPLACE) {
+        bool enable = !g_replaceFlyout;
+        if (enable) {
+            HWINEVENTHOOK hook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr,
+                ForegroundProc, 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+            if (!hook) {
+                MessageBoxW(g_hwnd, L"Không thể kích hoạt chức năng thay lịch Windows.", L"VN Lunar Calendar",
+                    MB_OK | MB_ICONWARNING);
+                enable = false;
+            } else g_eventHook = hook;
+        } else if (g_eventHook) {
+            UnhookWinEvent(g_eventHook);
+            g_eventHook = nullptr;
+            if (g_replacingFlyout) SendEscape();
+            g_replacingFlyout = false;
+        }
+        g_replaceFlyout = enable;
+        g_cfgReplace = enable;
+        WriteDword(L"ReplaceFlyout", enable ? 1 : 0);
+        if (g_settings) InvalidateRect(g_settings, nullptr, TRUE);
+    }
     else if (cmd == ID_MENU_AUTORUN) SetAutorun(!IsAutorun());
     else if (cmd == ID_MENU_ABOUT) {
         MessageBoxW(nullptr,
-                    L"VN Lunar Calendar 1.0\n"
+                    L"VN Lunar Calendar 1.0.0.1\n"
                     L"Lịch âm Việt Nam cho đồng hồ taskbar (Windows 10 / 11)\n\n"
                     L"Tác giả: bbkim\n"
                     L"\u00A9 2026 bbkim. All rights reserved.",
@@ -794,8 +841,182 @@ void ShowTrayMenu() {
     else if (cmd == ID_MENU_EXIT) DestroyWindow(g_hwnd);
 }
 
+void DrawCfgText(HDC dc, int x, int y, const wchar_t* text) {
+    TextOutW(dc, x, y, text, static_cast<int>(wcslen(text)));
+}
+
+void DrawCfgCheck(HDC dc, int x, int y, bool checked) {
+    RECT r{x, y, x + 18, y + 18};
+    HBRUSH white = CreateSolidBrush(RGB(255,255,255));
+    FillRect(dc, &r, white);
+    DeleteObject(white);
+    HPEN pen = CreatePen(PS_SOLID, 1, RGB(20,20,20));
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
+    Rectangle(dc, x, y, x + 19, y + 19);
+    if (checked) {
+        MoveToEx(dc, x + 3, y + 9, nullptr);
+        LineTo(dc, x + 7, y + 15);
+        LineTo(dc, x + 16, y + 3);
+    }
+    SelectObject(dc, oldBrush);
+    SelectObject(dc, oldPen);
+    DeleteObject(pen);
+}
+
+
+void DrawCfgExit(HDC dc, int x, int y) {
+    HPEN pen = CreatePen(PS_SOLID, 2, RGB(15,15,15));
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    MoveToEx(dc, x, y, nullptr); LineTo(dc, x + 11, y + 11);
+    MoveToEx(dc, x + 11, y, nullptr); LineTo(dc, x, y + 11);
+    SelectObject(dc, oldPen);
+    DeleteObject(pen);
+}
+
+void DrawCfgHide(HDC dc, int x, int y) {
+    HPEN pen = CreatePen(PS_SOLID, 2, RGB(15,15,15));
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    MoveToEx(dc, x, y, nullptr); LineTo(dc, x + 9, y + 9);
+    MoveToEx(dc, x + 3, y + 9, nullptr); LineTo(dc, x + 9, y + 9);
+    LineTo(dc, x + 9, y + 3);
+    SelectObject(dc, oldPen);
+    DeleteObject(pen);
+}
+
+bool IsCfgHidePoint(HWND hwnd, int x, int y) {
+    RECT rc{};
+    if (!GetClientRect(hwnd, &rc)) return false;
+    RECT hit{rc.right - 13, rc.bottom - 13, rc.right - 1, rc.bottom - 1};
+    POINT pt{x, y};
+    return PtInRect(&hit, pt) != FALSE;
+}
+
+void ApplyCfgChanges(HWND hwnd) {
+    g_replaceFlyout = g_cfgReplace;
+    WriteDword(L"ReplaceFlyout", g_replaceFlyout ? 1 : 0);
+    g_trayEnabled = g_cfgTray;
+    WriteDword(L"TrayEnabled", g_trayEnabled ? 1 : 0);
+    if (g_trayEnabled) UpdateTrayIcon(true); else Shell_NotifyIconW(NIM_DELETE, &g_nid);
+    if (g_replaceFlyout && !g_eventHook) {
+        g_eventHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr,
+            ForegroundProc, 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+        if (!g_eventHook) {
+            g_replaceFlyout = g_cfgReplace = false;
+            WriteDword(L"ReplaceFlyout", 0);
+            MessageBoxW(hwnd, L"Không thể kích hoạt chức năng thay lịch Windows.", L"VN Lunar Calendar",
+                MB_OK | MB_ICONWARNING);
+        }
+    } else if (!g_replaceFlyout && g_eventHook) {
+        UnhookWinEvent(g_eventHook);
+        g_eventHook = nullptr;
+        if (g_replacingFlyout) SendEscape();
+        g_replacingFlyout = false;
+    }
+    InvalidateRect(hwnd, nullptr, TRUE);
+}
+
+LRESULT CALLBACK SettingsProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+        case WM_CREATE:
+            g_cfgAutorun = IsAutorun();
+            g_cfgReplace = g_replaceFlyout;
+            g_cfgTray = g_trayEnabled;
+            g_cfgFont = CreateFontW(-19, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, NONANTIALIASED_QUALITY,
+                FIXED_PITCH | FF_MODERN, L"Consolas");
+            g_cfgTitleFont = CreateFontW(-19, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, NONANTIALIASED_QUALITY,
+                FIXED_PITCH | FF_MODERN, L"Consolas");
+            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 250, 122, SWP_NOMOVE | SWP_NOACTIVATE);
+            return 0;
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC dc = BeginPaint(hwnd, &ps);
+            RECT rc{}; GetClientRect(hwnd, &rc);
+            FillRect(dc, &rc, static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+            SetBkMode(dc, TRANSPARENT);
+            SetTextColor(dc, RGB(0,0,0));
+            HGDIOBJ oldFont = g_cfgFont ? SelectObject(dc, g_cfgFont) : nullptr;
+            if (g_cfgTitleFont) SelectObject(dc, g_cfgTitleFont);
+            DrawCfgText(dc, 9, 5, L"VN Lunar Calendar");
+            if (g_cfgFont) SelectObject(dc, g_cfgFont);
+            DrawCfgCheck(dc, 10, 34, g_cfgReplace);
+            DrawCfgText(dc, 34, 31, L"Thay lịch Windows");
+            DrawCfgCheck(dc, 10, 60, g_cfgAutorun);
+            DrawCfgText(dc, 34, 57, L"Chạy cùng Windows");
+            DrawCfgCheck(dc, 10, 86, g_cfgTray);
+            DrawCfgText(dc, 34, 83, L"Khay hệ thống");
+            DrawCfgExit(dc, 229, 6);
+            DrawCfgHide(dc, rc.right - 11, rc.bottom - 11);
+            if (oldFont) SelectObject(dc, oldFont);
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        case WM_LBUTTONUP: {
+            int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
+            if (IsCfgHidePoint(hwnd, x, y)) {
+                ShowWindow(hwnd, SW_HIDE);
+                return 0;
+            } else if (x >= 8 && x <= 232 && y >= 31 && y <= 54) {
+                g_cfgReplace = !g_cfgReplace;
+                ApplyCfgChanges(hwnd);
+            } else if (x >= 8 && x <= 232 && y >= 57 && y <= 80) {
+                bool next = !g_cfgAutorun;
+                if (SetAutorun(next)) g_cfgAutorun = next;
+                else MessageBoxW(hwnd, L"Không thể cập nhật Khởi động cùng Windows. Hãy kiểm tra quyền Registry.",
+                    L"VN Lunar Calendar", MB_OK | MB_ICONWARNING);
+            } else if (x >= 8 && x <= 232 && y >= 82 && y <= 108) {
+                g_cfgTray = !g_cfgTray;
+                g_trayEnabled = g_cfgTray;
+                WriteDword(L"TrayEnabled", g_trayEnabled ? 1 : 0);
+                if (g_trayEnabled) UpdateTrayIcon(true); else Shell_NotifyIconW(NIM_DELETE, &g_nid);
+            } else if (x >= 224 && x <= 249 && y >= 0 && y <= 24) {
+                if (g_hwnd && IsWindow(g_hwnd)) DestroyWindow(g_hwnd);
+                return 0;
+            }
+            InvalidateRect(hwnd, nullptr, TRUE);
+            return 0;
+        }
+        case WM_NCHITTEST: {
+            LRESULT hit = DefWindowProcW(hwnd, msg, wp, lp);
+            if (hit == HTCLIENT) {
+                POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+                ScreenToClient(hwnd, &pt);
+                if (pt.y < 26 && pt.x < 222) return HTCAPTION;
+            }
+            return hit;
+        }
+        case WM_ERASEBKGND: return 1;
+        case WM_CLOSE:
+            if (g_hwnd && IsWindow(g_hwnd)) DestroyWindow(g_hwnd);
+            return 0;
+        case WM_DESTROY:
+            g_settings = nullptr;
+            if (g_cfgFont) { DeleteObject(g_cfgFont); g_cfgFont = nullptr; }
+            if (g_cfgTitleFont) { DeleteObject(g_cfgTitleFont); g_cfgTitleFont = nullptr; }
+            return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+void ShowSettings() {
+    if (g_settings && IsWindow(g_settings)) { ShowWindow(g_settings, SW_SHOW); SetForegroundWindow(g_settings); return; }
+    g_settings = CreateWindowExW(WS_EX_TOOLWINDOW, L"VN_LunarCalendarSettings", L"VN Lunar Calendar - Cấu hình",
+                                 WS_POPUP | WS_BORDER, CW_USEDEFAULT, CW_USEDEFAULT, 250, 122,
+                                 g_hwnd, nullptr, g_inst, nullptr);
+    if (!g_settings) return;
+    RECT r{}; GetWindowRect(g_settings, &r);
+    int x = (GetSystemMetrics(SM_CXSCREEN) - (r.right-r.left))/2;
+    int y = (GetSystemMetrics(SM_CYSCREEN) - (r.bottom-r.top))/2;
+    SetWindowPos(g_settings, HWND_TOP, x, y, 0, 0, SWP_NOSIZE | SWP_SHOWWINDOW);
+}
+
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
+        case WM_APP_SHOW_SETTINGS:
+            ShowSettings();
+            return 0;
         case WM_APP_CLOCK_CLICK: {
             if (IsWindowVisible(g_hwnd)) HideCalendar(false);
             else ShowCalendar(&g_pendingClock);
@@ -891,6 +1112,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             else if (LOWORD(lp) == WM_RBUTTONUP || LOWORD(lp) == WM_CONTEXTMENU) ShowTrayMenu();
             return 0;
         case WM_DESTROY:
+            if (g_settings) DestroyWindow(g_settings);
             Shell_NotifyIconW(NIM_DELETE, &g_nid);
             if (g_trayIcon) DestroyIcon(g_trayIcon);
             ReleaseResources();
@@ -929,13 +1151,21 @@ void RoundCorners(HWND hwnd) {   // Windows 11 only, ignored elsewhere
 
 }  // namespace
 
-int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
+int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
+    bool autoStart = cmdLine && wcsstr(cmdLine, L"--auto") != nullptr;
     HANDLE mutex = CreateMutexW(nullptr, TRUE, kMutexName);
-    if (!mutex || GetLastError() == ERROR_ALREADY_EXISTS) return 0;
+    if (!mutex) return 1;
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        HWND existing = FindWindowW(kClassName, nullptr);
+        if (existing && !autoStart) PostMessageW(existing, WM_APP_SHOW_SETTINGS, 0, 0);
+        CloseHandle(mutex);
+        return 0;
+    }
 
     g_inst = inst;
     EnableDpiAwareness();
     g_replaceFlyout = ReadDword(L"ReplaceFlyout", 1);
+    g_trayEnabled = ReadDword(L"TrayEnabled", 1);
     LoadSystemTheme();
     LoadLocaleInfo();
 
@@ -947,19 +1177,30 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(ID_ICON));
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wc.lpszClassName = kClassName;
-    RegisterClassExW(&wc);
+    if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) { CloseHandle(mutex); return 1; }
+    WNDCLASSEXW swc{}; swc.cbSize = sizeof(swc); swc.lpfnWndProc = SettingsProc; swc.hInstance = inst;
+    swc.hCursor = LoadCursorW(nullptr, IDC_ARROW); swc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+    swc.lpszClassName = L"VN_LunarCalendarSettings";
+    if (!RegisterClassExW(&swc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) { CloseHandle(mutex); return 1; }
 
     g_hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, kClassName, L"VN Lunar Calendar", WS_POPUP, 0, 0, 100,
                              100, nullptr, nullptr, inst, nullptr);
-    if (!g_hwnd) return 1;
+    if (!g_hwnd) { CloseHandle(mutex); return 1; }
     RoundCorners(g_hwnd);
 
     g_taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
-    UpdateTrayIcon(true);
+    if (g_trayEnabled) UpdateTrayIcon(true);
     ArmMidnightTimer();
     RegisterHotKey(g_hwnd, 1, MOD_WIN, 'N');
-    g_eventHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr, ForegroundProc, 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
-    TrimMemory();
+    if (g_replaceFlyout) {
+        g_eventHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr,
+            ForegroundProc, 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+        if (!g_eventHook) {
+            g_replaceFlyout = false;
+            WriteDword(L"ReplaceFlyout", 0);
+        }
+    }
+    if (!autoStart) ShowSettings();
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {

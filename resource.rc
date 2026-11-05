@@ -4,8 +4,8 @@
 1 24 "app.manifest"
 
 1 VERSIONINFO
- FILEVERSION 1,0,0,0
- PRODUCTVERSION 1,0,0,0
+ FILEVERSION 1,0,0,1
+ PRODUCTVERSION 1,0,0,1
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS 0x40004L
@@ -18,12 +18,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "bbkim"
             VALUE "FileDescription", "VN Lunar Calendar - Lịch âm Việt Nam cho đồng hồ taskbar"
-            VALUE "FileVersion", "1.0.0.0"
+            VALUE "FileVersion", "1.0.0.1"
             VALUE "InternalName", "VN_LunarCalendar"
             VALUE "LegalCopyright", "© 2026 bbkim. All rights reserved."
             VALUE "OriginalFilename", "VN_LunarCalendar.exe"
             VALUE "ProductName", "VN Lunar Calendar"
-            VALUE "ProductVersion", "1.0.0.0"
+            VALUE "ProductVersion", "1.0.0.1"
             VALUE "Comments", "Tác giả: bbkim. Lịch âm Việt Nam thay cho khay lịch của Windows 10/11."
         END
     END

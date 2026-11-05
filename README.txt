@@ -1,4 +1,4 @@
-﻿VN_LunarCalendar - Lịch âm Việt Nam cho đồng hồ taskbar (Windows 10 và Windows 11)
+﻿﻿VN_LunarCalendar - Lịch âm Việt Nam cho đồng hồ taskbar (Windows 10 và Windows 11)
 ===============================================================================
 
 LÀ GÌ
@@ -11,12 +11,15 @@ CÁCH DÙNG
   - Muốn dùng lịch gốc của Windows: bỏ tick "Thay lịch Windows khi bấm đồng hồ" trong menu chuột phải của icon khay.
     Lịch gốc cũng vẫn mở bình thường khi bạn gọi bằng phím tắt (Win+Alt+D) vì lúc đó con trỏ không nằm trên đồng hồ.
   - Win+N hoặc click icon khay (rê chuột vào icon để xem ngày âm hôm nay): mở lịch.
+  - Mở EXE thủ công: hiện cửa sổ cấu hình; mở lần nữa khi đang chạy nền: gọi cửa sổ cấu hình hiện tại.
+  - Khi Windows tự khởi động: tham số --auto giúp chạy nền, không hiện cấu hình.
+  - Cấu hình cho phép bật/tắt tự khởi động, thay lịch Windows và icon khay.
   - Lăn chuột / mũi tên / PageUp / PageDown: đổi tháng. Home: về hôm nay.
   - Rê chuột vào một ngày: dòng thông tin phía dưới hiện ngày âm, Can Chi ngày/tháng/năm và tên ngày lễ.
   - Màu đỏ = ngày lễ âm lịch bạn chọn (Tết mùng 1-4 và Giỗ Tổ đỏ cả số dương; các ngày khác chỉ nhãn âm).
 
 THÔNG TIN SẢN PHẨM (nhúng trong exe)
-  Icon: vn_lunar.ico (exe, cửa sổ và icon khay). Tác giả/Công ty: bbkim. Sản phẩm: VN Lunar Calendar, phiên bản 1.0.0.0.
+  Icon: vn_lunar.ico (exe, cửa sổ và icon khay). Tác giả/Công ty: bbkim. Sản phẩm: VN Lunar Calendar, phiên bản 1.0.0.1.
   Xem bằng chuột phải exe > Properties > Details, hoặc icon khay > "Giới thiệu".
   Muốn sửa chữ/phiên bản: mở resource.rc. Muốn đổi icon: thay file vn_lunar.ico (giữ tên). Rồi chạy lại build.bat.
   app.manifest: khai báo hỗ trợ Windows 7-11, chạy quyền thường (không hỏi UAC), DPI từng màn hình.
@@ -28,7 +31,7 @@ BUILD
 TÀI NGUYÊN
   - Khi rảnh: 1 cửa sổ ẩn + 1 WinEvent hook chỉ chạy khi cửa sổ foreground đổi (không chạy theo chuột).
   - 1 timer duy nhất, kêu 1 lần mỗi nửa đêm. Timer 1 giây chỉ chạy khi lịch đang mở.
-  - Font và bộ đệm vẽ chỉ được tạo khi lịch mở, giải phóng khi đóng; RAM được thu gọn (working set) mỗi lần đóng.
+  - Font và bộ đệm vẽ chỉ được tạo khi lịch mở, giải phóng khi đóng; không ép thu hồi working set.
 
 GIỚI HẠN
   - Âm lịch tính theo múi giờ UTC+7 (UTC+8 cho năm trước 1968), đã kiểm tra các ngày Tết 1968-2028, tháng nhuận và tính nhất quán 1950-2150.
