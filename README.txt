@@ -15,6 +15,8 @@ CÁCH DÙNG
   - Lăn chuột / mũi tên / PageUp / PageDown: đổi tháng. Home: về hôm nay.
   - Rê chuột vào một ngày: dòng thông tin phía dưới hiện ngày âm, Can Chi ngày/tháng/năm và tên ngày lễ.
   - Màu đỏ = ngày lễ âm lịch bạn chọn (Tết mùng 1-4 và Giỗ Tổ đỏ cả số dương; các ngày khác chỉ nhãn âm).
+  - Bấm X để thoát hẳn lịch VN.
+  - Bấm mũi tên là ẩn cửa sổ cài đặt lịch vẫn chạy.
 
 GIỚI HẠN
   - Âm lịch tính theo múi giờ UTC+7 (UTC+8 cho năm trước 1968), đã kiểm tra các ngày Tết 1968-2028, tháng nhuận và tính nhất quán 1950-2150.
